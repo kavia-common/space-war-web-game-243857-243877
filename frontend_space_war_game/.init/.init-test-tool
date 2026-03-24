@@ -1,0 +1,2 @@
+{ "working_directory": "/tmp/kavia/workspace/code-generation",
+ "command": "npm run test" }
