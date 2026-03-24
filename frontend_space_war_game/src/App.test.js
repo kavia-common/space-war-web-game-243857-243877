@@ -56,3 +56,31 @@ test('canvas is present and accessible after starting', () => {
 
   expect(screen.getByRole('img', { name: /space war game canvas/i })).toBeInTheDocument();
 });
+
+test('leaderboard screen shows local scores and allows returning back to start', () => {
+  window.localStorage.setItem(
+    'spacewar.scores.v1',
+    JSON.stringify([
+      { player: 'Zed', score: 4200, timeAliveSec: 21.3, at: '2025-01-02T03:04:05.000Z' },
+      { player: 'Ace', score: 3100, timeAliveSec: 15.7, at: '2025-01-03T03:04:05.000Z' }
+    ])
+  );
+
+  render(<App />);
+
+  // Open leaderboard from HUD
+  fireEvent.click(screen.getByRole('button', { name: /leaderboard/i }));
+
+  expect(screen.getByRole('dialog', { name: /leaderboard screen/i })).toBeInTheDocument();
+  expect(screen.getByRole('table', { name: /leaderboard table/i })).toBeInTheDocument();
+
+  // Rows should contain player names and formatted scores
+  expect(screen.getByText('Zed')).toBeInTheDocument();
+  expect(screen.getByText('Ace')).toBeInTheDocument();
+  expect(screen.getByText('4,200')).toBeInTheDocument();
+  expect(screen.getByText('3,100')).toBeInTheDocument();
+
+  // Back returns to start screen
+  fireEvent.click(screen.getByRole('button', { name: /^back$/i }));
+  expect(screen.getByRole('dialog', { name: /start screen/i })).toBeInTheDocument();
+});

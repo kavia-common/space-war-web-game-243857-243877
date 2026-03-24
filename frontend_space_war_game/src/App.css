@@ -298,6 +298,62 @@
   margin-left: 8px;
 }
 
+/* Leaderboard */
+.cardToolbar {
+  margin-top: 14px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.leaderboardTableWrap {
+  margin-top: 12px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.75);
+}
+
+.leaderboardTable {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.leaderboardTable th,
+.leaderboardTable td {
+  padding: 10px 12px;
+  border-bottom: 1px solid rgba(15, 23, 42, 0.08);
+  text-align: left;
+}
+
+.leaderboardTable th {
+  font-size: 11px;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  background: rgba(255, 255, 255, 0.55);
+}
+
+.leaderboardTable tr:last-child td {
+  border-bottom: none;
+}
+
+.leaderboardRank {
+  font-weight: 900;
+  width: 52px;
+}
+
+.leaderboardScore {
+  font-weight: 900;
+}
+
+.leaderboardMuted {
+  color: var(--muted);
+}
+
 /* Responsive tweaks */
 @media (max-width: 880px) {
   .topbar {

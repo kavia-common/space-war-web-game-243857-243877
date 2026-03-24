@@ -169,7 +169,7 @@ function upsertHighScore(scores, entry) {
 
 function makeInitialState() {
   return {
-    screen: 'start', // start | playing | gameover
+    screen: 'start', // start | playing | gameover | leaderboard
     score: 0,
     lives: GAME_CONFIG.lives,
     health: GAME_CONFIG.player.maxHealth,
@@ -341,9 +341,26 @@ function App() {
   const [playerName, setPlayerName] = useState(() => readPlayerName());
   const [playerNameDraft, setPlayerNameDraft] = useState(() => readPlayerName());
   const [highScores, setHighScores] = useState(() => readHighScores());
+  const previousScreenRef = useRef('start');
 
   const hasPlayerName = playerName.trim().length > 0;
   const currentTopScore = highScores.length > 0 ? highScores[0] : null;
+
+  const refreshHighScores = useCallback(() => {
+    setHighScores(readHighScores());
+  }, []);
+
+  const openLeaderboard = useCallback(() => {
+    refreshHighScores();
+    setState(prev => {
+      previousScreenRef.current = prev.screen;
+      return { ...prev, screen: 'leaderboard' };
+    });
+  }, [refreshHighScores]);
+
+  const closeLeaderboard = useCallback(() => {
+    setState(prev => ({ ...prev, screen: previousScreenRef.current || 'start' }));
+  }, []);
 
   const persistPlayerName = useCallback(name => {
     const trimmed = name.trim();
@@ -427,7 +444,9 @@ function App() {
         if (state.screen === 'gameover') restartGame();
       }
       if (key === 'escape') {
-        if (state.screen === 'playing') {
+        if (state.screen === 'leaderboard') {
+          closeLeaderboard();
+        } else if (state.screen === 'playing') {
           // soft pause by returning to start; keeps it simple
           resetToStart();
         }
@@ -444,7 +463,7 @@ function App() {
       window.removeEventListener('keydown', onKeyDown);
       window.removeEventListener('keyup', onKeyUp);
     };
-  }, [resetToStart, restartGame, startGame, state.screen]);
+  }, [closeLeaderboard, resetToStart, restartGame, startGame, state.screen]);
 
   // Pointer controls (optional): drag to move, tap to shoot when playing
   useEffect(() => {
@@ -922,6 +941,23 @@ function App() {
     persistPlayerName(trimmed);
   };
 
+  const formatWhen = iso => {
+    try {
+      const d = new Date(iso);
+      return d.toLocaleString(undefined, { year: 'numeric', month: 'short', day: '2-digit' });
+    } catch (_) {
+      return iso;
+    }
+  };
+
+  const leaderboardTitle = useMemo(() => {
+    if (state.screen !== 'leaderboard') return '';
+    const from = previousScreenRef.current;
+    if (from === 'gameover') return 'Leaderboard';
+    if (from === 'playing') return 'Leaderboard';
+    return 'Leaderboard';
+  }, [state.screen]);
+
   return (
     <div className="App">
       <main className="page">
@@ -974,6 +1010,15 @@ function App() {
               <div className="hudLabel">Difficulty</div>
               <div className="hudValue" data-testid="hud-difficulty">
                 {difficultyLabel}
+              </div>
+            </div>
+
+            <div className="hudItem">
+              <div className="hudLabel">Menu</div>
+              <div style={{ marginTop: 6, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <button className="btn btnGhost" onClick={openLeaderboard} type="button">
+                  Leaderboard
+                </button>
               </div>
             </div>
           </div>
@@ -1068,6 +1113,9 @@ function App() {
                       <button className="btn btnGhost" onClick={clearPlayerName}>
                         Change Player
                       </button>
+                      <button className="btn btnGhost" onClick={openLeaderboard} type="button">
+                        View Leaderboard
+                      </button>
                     </div>
 
                     <div className="hint">Press Enter to start • Esc to return here while playing</div>
@@ -1140,9 +1188,68 @@ function App() {
                   <button className="btn btnGhost" onClick={resetToStart}>
                     Back to Start
                   </button>
+                  <button className="btn btnGhost" onClick={openLeaderboard} type="button">
+                    View Leaderboard
+                  </button>
                 </div>
 
                 <div className="hint">Press Enter to restart</div>
+              </div>
+            </div>
+          )}
+
+          {state.screen === 'leaderboard' && (
+            <div className="overlay" role="dialog" aria-label="Leaderboard screen">
+              <div className="card">
+                <h1 className="title">{leaderboardTitle || 'Leaderboard'}</h1>
+                <p className="subtitle">Top scores stored locally in this browser.</p>
+
+                <div className="cardToolbar" aria-label="Leaderboard actions">
+                  <div className="hint" style={{ marginTop: 0 }}>
+                    Showing {Math.min(highScores.length, MAX_HIGH_SCORES)} / {MAX_HIGH_SCORES}
+                  </div>
+                  <div className="actions" style={{ marginTop: 0 }}>
+                    <button className="btn btnGhost" onClick={refreshHighScores} type="button">
+                      Refresh
+                    </button>
+                    <button className="btn btnPrimary" onClick={closeLeaderboard} type="button" autoFocus>
+                      Back
+                    </button>
+                  </div>
+                </div>
+
+                {highScores.length === 0 ? (
+                  <div className="hint" style={{ marginTop: 14 }}>
+                    No local scores yet. Play a round to add your first score.
+                  </div>
+                ) : (
+                  <div className="leaderboardTableWrap" style={{ marginTop: 14 }}>
+                    <table className="leaderboardTable" aria-label="Leaderboard table">
+                      <thead>
+                        <tr>
+                          <th className="leaderboardRank">Rank</th>
+                          <th>Player</th>
+                          <th>Score</th>
+                          <th>Time</th>
+                          <th>When</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {highScores.slice(0, MAX_HIGH_SCORES).map((s, idx) => (
+                          <tr key={`${s.at}-${idx}`}>
+                            <td className="leaderboardRank">{idx + 1}</td>
+                            <td style={{ fontWeight: 800 }}>{s.player}</td>
+                            <td className="leaderboardScore">{formatInt(s.score)}</td>
+                            <td className="leaderboardMuted">{s.timeAliveSec.toFixed(1)}s</td>
+                            <td className="leaderboardMuted">{formatWhen(s.at)}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+
+                <div className="hint">Tip: This leaderboard is per-device/browser. Press Esc to go back.</div>
               </div>
             </div>
           )}
