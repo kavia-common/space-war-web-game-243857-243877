@@ -39,6 +39,13 @@ const GAME_CONFIG = {
   lives: 3
 };
 
+const STORAGE_KEYS = {
+  playerName: 'spacewar.playerName.v1',
+  scores: 'spacewar.scores.v1'
+};
+
+const MAX_HIGH_SCORES = 10;
+
 function clamp(v, min, max) {
   return Math.max(min, Math.min(max, v));
 }
@@ -67,54 +74,97 @@ function rand(min, max) {
   return min + Math.random() * (max - min);
 }
 
-// Simple audio hook (optional; gracefully no-ops if Audio isn't available)
-function useSfx() {
-  const ctxRef = useRef(null);
+function safeGetLocalStorage() {
+  if (typeof window === 'undefined') return null;
+  try {
+    return window.localStorage;
+  } catch (_) {
+    return null;
+  }
+}
 
-  const getCtx = () => {
-    if (typeof window === 'undefined') return null;
-    const AudioCtx = window.AudioContext || window.webkitAudioContext;
-    if (!AudioCtx) return null;
-    if (!ctxRef.current) ctxRef.current = new AudioCtx();
-    return ctxRef.current;
-  };
+/**
+ * Read the saved player name from localStorage.
+ * Returns empty string if missing/unavailable.
+ */
+function readPlayerName() {
+  const ls = safeGetLocalStorage();
+  if (!ls) return '';
+  const raw = ls.getItem(STORAGE_KEYS.playerName);
+  return typeof raw === 'string' ? raw : '';
+}
 
-  const playBeep = useCallback((frequency, durationMs, type = 'sine', gain = 0.04) => {
-    const ctx = getCtx();
-    if (!ctx) return;
+/**
+ * Persist player name to localStorage.
+ */
+function writePlayerName(name) {
+  const ls = safeGetLocalStorage();
+  if (!ls) return;
+  ls.setItem(STORAGE_KEYS.playerName, name);
+}
 
-    // Some browsers require user gesture; if suspended, try resume and continue.
-    if (ctx.state === 'suspended') {
-      ctx.resume().catch(() => {});
-    }
+/**
+ * @typedef {{ player: string, score: number, timeAliveSec: number, at: string }} ScoreEntry
+ */
 
-    const osc = ctx.createOscillator();
-    const g = ctx.createGain();
-    osc.type = type;
-    osc.frequency.value = frequency;
-    g.gain.value = gain;
+/**
+ * Read high score entries from localStorage.
+ * @returns {ScoreEntry[]}
+ */
+function readHighScores() {
+  const ls = safeGetLocalStorage();
+  if (!ls) return [];
+  try {
+    const raw = ls.getItem(STORAGE_KEYS.scores);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter(
+        e =>
+          e &&
+          typeof e === 'object' &&
+          typeof e.player === 'string' &&
+          typeof e.score === 'number' &&
+          typeof e.timeAliveSec === 'number' &&
+          typeof e.at === 'string'
+      )
+      .map(e => ({
+        player: e.player,
+        score: e.score,
+        timeAliveSec: e.timeAliveSec,
+        at: e.at
+      }));
+  } catch (_) {
+    return [];
+  }
+}
 
-    osc.connect(g);
-    g.connect(ctx.destination);
+/**
+ * Persist high score entries to localStorage.
+ * @param {ScoreEntry[]} scores
+ */
+function writeHighScores(scores) {
+  const ls = safeGetLocalStorage();
+  if (!ls) return;
+  try {
+    ls.setItem(STORAGE_KEYS.scores, JSON.stringify(scores));
+  } catch (_) {
+    // ignore storage quota errors etc.
+  }
+}
 
-    const t0 = ctx.currentTime;
-    osc.start(t0);
-    osc.stop(t0 + durationMs / 1000);
-
-    // gentle fade-out to avoid clicks
-    g.gain.setValueAtTime(gain, t0);
-    g.gain.exponentialRampToValueAtTime(0.0001, t0 + durationMs / 1000);
-  }, []);
-
-  return useMemo(
-    () => ({
-      shoot: () => playBeep(860, 50, 'square', 0.03),
-      hit: () => playBeep(160, 90, 'sawtooth', 0.05),
-      explode: () => playBeep(90, 160, 'triangle', 0.05),
-      start: () => playBeep(520, 120, 'sine', 0.03)
-    }),
-    [playBeep]
-  );
+/**
+ * Insert a new score into the high score list, keeping it sorted and trimmed.
+ * @param {ScoreEntry[]} scores
+ * @param {ScoreEntry} entry
+ * @returns {ScoreEntry[]}
+ */
+function upsertHighScore(scores, entry) {
+  const next = [...scores, entry]
+    .sort((a, b) => b.score - a.score || b.timeAliveSec - a.timeAliveSec)
+    .slice(0, MAX_HIGH_SCORES);
+  return next;
 }
 
 function makeInitialState() {
@@ -221,6 +271,56 @@ function drawStarfield(ctx, w, h, t) {
   ctx.restore();
 }
 
+// Simple audio hook (optional; gracefully no-ops if Audio isn't available)
+function useSfx() {
+  const ctxRef = useRef(null);
+
+  const getCtx = () => {
+    if (typeof window === 'undefined') return null;
+    const AudioCtx = window.AudioContext || window.webkitAudioContext;
+    if (!AudioCtx) return null;
+    if (!ctxRef.current) ctxRef.current = new AudioCtx();
+    return ctxRef.current;
+  };
+
+  const playBeep = useCallback((frequency, durationMs, type = 'sine', gain = 0.04) => {
+    const ctx = getCtx();
+    if (!ctx) return;
+
+    // Some browsers require user gesture; if suspended, try resume and continue.
+    if (ctx.state === 'suspended') {
+      ctx.resume().catch(() => {});
+    }
+
+    const osc = ctx.createOscillator();
+    const g = ctx.createGain();
+    osc.type = type;
+    osc.frequency.value = frequency;
+    g.gain.value = gain;
+
+    osc.connect(g);
+    g.connect(ctx.destination);
+
+    const t0 = ctx.currentTime;
+    osc.start(t0);
+    osc.stop(t0 + durationMs / 1000);
+
+    // gentle fade-out to avoid clicks
+    g.gain.setValueAtTime(gain, t0);
+    g.gain.exponentialRampToValueAtTime(0.0001, t0 + durationMs / 1000);
+  }, []);
+
+  return useMemo(
+    () => ({
+      shoot: () => playBeep(860, 50, 'square', 0.03),
+      hit: () => playBeep(160, 90, 'sawtooth', 0.05),
+      explode: () => playBeep(90, 160, 'triangle', 0.05),
+      start: () => playBeep(520, 120, 'sine', 0.03)
+    }),
+    [playBeep]
+  );
+}
+
 // PUBLIC_INTERFACE
 function App() {
   /** Main entry point for the Space War game UI + canvas gameplay. */
@@ -237,11 +337,31 @@ function App() {
   const [state, setState] = useState(() => makeInitialState());
   const [canvasCssSize, setCanvasCssSize] = useState(() => ({ cssWidth: 800, cssHeight: 600 }));
 
+  // Identity + storage-backed stats
+  const [playerName, setPlayerName] = useState(() => readPlayerName());
+  const [playerNameDraft, setPlayerNameDraft] = useState(() => readPlayerName());
+  const [highScores, setHighScores] = useState(() => readHighScores());
+
+  const hasPlayerName = playerName.trim().length > 0;
+  const currentTopScore = highScores.length > 0 ? highScores[0] : null;
+
+  const persistPlayerName = useCallback(name => {
+    const trimmed = name.trim();
+    setPlayerName(trimmed);
+    setPlayerNameDraft(trimmed);
+    writePlayerName(trimmed);
+  }, []);
+
+  const clearPlayerName = useCallback(() => {
+    persistPlayerName('');
+  }, [persistPlayerName]);
+
   const resetToStart = useCallback(() => {
-    setState(prev => ({ ...makeInitialState(), screen: 'start' }));
+    setState(() => ({ ...makeInitialState(), screen: 'start' }));
   }, []);
 
   const startGame = useCallback(() => {
+    if (!hasPlayerName) return; // safety: UI should prevent starting without a name
     sfx.start();
     const ms = nowMs();
     setState(() => {
@@ -251,22 +371,34 @@ function App() {
       return st;
     });
     lastFrameAtMsRef.current = ms;
-  }, [sfx]);
+  }, [hasPlayerName, sfx]);
 
   const restartGame = useCallback(() => {
     startGame();
   }, [startGame]);
 
-  const gameOver = useCallback(() => {
-    setState(prev => ({ ...prev, screen: 'gameover' }));
-  }, []);
+  const recordScoreAndGameOver = useCallback(() => {
+    setState(prev => {
+      const entry = {
+        player: playerName.trim() || 'Player',
+        score: prev.score,
+        timeAliveSec: prev.timeAliveSec,
+        at: new Date().toISOString()
+      };
+
+      const updated = upsertHighScore(readHighScores(), entry);
+      writeHighScores(updated);
+      setHighScores(updated);
+
+      return { ...prev, screen: 'gameover' };
+    });
+  }, [playerName]);
 
   // Resize observer-ish (window resize + initial)
   useEffect(() => {
     const recompute = () => {
       const containerW =
-        containerRef.current?.getBoundingClientRect?.().width ??
-        Math.min(window.innerWidth, GAME_CONFIG.maxCanvasWidth);
+        containerRef.current?.getBoundingClientRect?.().width ?? Math.min(window.innerWidth, GAME_CONFIG.maxCanvasWidth);
 
       setCanvasCssSize(computeCanvasSize(containerW));
     };
@@ -362,7 +494,13 @@ function App() {
     const difficulty = st.difficulty;
 
     // Basic wave logic: sometimes spawn 2 at higher difficulty.
-    const waveSize = 1 + (difficulty >= 2.3 ? (Math.random() < Math.min(0.45, (difficulty - 2) * 0.18) ? 1 : 0) : 0);
+    const waveSize =
+      1 +
+      (difficulty >= 2.3
+        ? Math.random() < Math.min(0.45, (difficulty - 2) * 0.18)
+          ? 1
+          : 0
+        : 0);
 
     for (let i = 0; i < waveSize; i += 1) {
       const radius = GAME_CONFIG.enemy.radius;
@@ -473,8 +611,16 @@ function App() {
       st.player.vx = ix * sp;
       st.player.vy = iy * sp;
 
-      st.player.x = clamp(st.player.x + st.player.vx * dtSec, st.player.radius, GAME_CONFIG.logicalWidth - st.player.radius);
-      st.player.y = clamp(st.player.y + st.player.vy * dtSec, st.player.radius, GAME_CONFIG.logicalHeight - st.player.radius);
+      st.player.x = clamp(
+        st.player.x + st.player.vx * dtSec,
+        st.player.radius,
+        GAME_CONFIG.logicalWidth - st.player.radius
+      );
+      st.player.y = clamp(
+        st.player.y + st.player.vy * dtSec,
+        st.player.radius,
+        GAME_CONFIG.logicalHeight - st.player.radius
+      );
 
       if (firing) shoot(st, ms);
 
@@ -594,6 +740,7 @@ function App() {
         st.player.y = GAME_CONFIG.logicalHeight - 70;
 
         if (st.lives <= 0) {
+          // Persist score and go to gameover screen.
           return { ...st, screen: 'gameover' };
         }
       }
@@ -612,83 +759,109 @@ function App() {
     [shoot, spawnEnemy, sfx]
   );
 
-  const renderFrame = useCallback(
-    st => {
-      const canvas = canvasRef.current;
-      if (!canvas) return;
+  // When state transitions to gameover (from gameplay), persist score.
+  useEffect(() => {
+    if (state.screen !== 'gameover') return;
+    // If we arrived here via recordScoreAndGameOver, it already wrote; but calling again is harmless
+    // because we read/append/write idempotently by always adding an entry (still acceptable for now).
+    // To avoid double entries, we only auto-record when we last came from playing.
+    // We don't track previous screen in state, so we do a minimal guard:
+    // only record if the last entry doesn't match this exact score/time/player.
+    const existing = readHighScores();
+    const latest = existing[0];
+    const signatureMatches =
+      latest &&
+      latest.player === (playerName.trim() || 'Player') &&
+      latest.score === state.score &&
+      Math.abs(latest.timeAliveSec - state.timeAliveSec) < 0.001;
 
-      const ctx = canvas.getContext('2d');
-      if (!ctx) return;
+    if (!signatureMatches) {
+      const entry = {
+        player: playerName.trim() || 'Player',
+        score: state.score,
+        timeAliveSec: state.timeAliveSec,
+        at: new Date().toISOString()
+      };
+      const updated = upsertHighScore(existing, entry);
+      writeHighScores(updated);
+      setHighScores(updated);
+    }
+  }, [playerName, state.score, state.screen, state.timeAliveSec]);
 
-      const w = GAME_CONFIG.logicalWidth;
-      const h = GAME_CONFIG.logicalHeight;
+  const renderFrame = useCallback(st => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
 
-      // Background
-      drawStarfield(ctx, w, h, st.timeAliveSec);
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
 
-      // Soft vignette / border
+    const w = GAME_CONFIG.logicalWidth;
+    const h = GAME_CONFIG.logicalHeight;
+
+    // Background
+    drawStarfield(ctx, w, h, st.timeAliveSec);
+
+    // Soft vignette / border
+    ctx.save();
+    ctx.strokeStyle = 'rgba(255,255,255,0.08)';
+    ctx.lineWidth = 2;
+    ctx.strokeRect(1, 1, w - 2, h - 2);
+    ctx.restore();
+
+    // Entities
+    // Bullets
+    ctx.save();
+    ctx.fillStyle = ACCENT;
+    for (const b of st.bullets) {
+      ctx.beginPath();
+      ctx.arc(b.x, b.y, b.radius, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    ctx.restore();
+
+    // Enemies
+    for (const en of st.enemies) {
+      drawShip(ctx, en.x, en.y, en.radius, 'rgba(239, 68, 68, 0.95)', false);
+    }
+
+    // Player (blink while invulnerable)
+    const invuln = st.screen === 'playing' && nowMs() - st.player.lastHitAtMs < GAME_CONFIG.player.invulnerableMsAfterHit;
+    const shouldDrawPlayer = !invuln || Math.floor(nowMs() / 100) % 2 === 0;
+    if (shouldDrawPlayer) {
+      drawShip(ctx, st.player.x, st.player.y, st.player.radius, PRIMARY, true);
+    }
+
+    // Particles
+    for (const p of st.particles) {
+      const age = clamp((nowMs() - p.bornAtMs) / p.aliveMs, 0, 1);
       ctx.save();
-      ctx.strokeStyle = 'rgba(255,255,255,0.08)';
-      ctx.lineWidth = 2;
-      ctx.strokeRect(1, 1, w - 2, h - 2);
+      ctx.globalAlpha = 1 - age;
+      ctx.fillStyle = p.color;
+      ctx.fillRect(p.x, p.y, 3, 3);
       ctx.restore();
+    }
 
-      // Entities
-      // Bullets
+    // Overlay hints when playing
+    if (st.screen === 'playing') {
       ctx.save();
-      ctx.fillStyle = ACCENT;
-      for (const b of st.bullets) {
-        ctx.beginPath();
-        ctx.arc(b.x, b.y, b.radius, 0, Math.PI * 2);
-        ctx.fill();
-      }
+      ctx.fillStyle = 'rgba(255,255,255,0.10)';
+      drawRoundedRect(ctx, 12, h - 48, 240, 34, 10);
+      ctx.fill();
+
+      ctx.fillStyle = 'rgba(255,255,255,0.78)';
+      ctx.font = '600 12px Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif';
+      ctx.fillText('Move: WASD/Arrows  •  Shoot: Space', 24, h - 27);
       ctx.restore();
+    }
 
-      // Enemies
-      for (const en of st.enemies) {
-        drawShip(ctx, en.x, en.y, en.radius, 'rgba(239, 68, 68, 0.95)', false);
-      }
-
-      // Player (blink while invulnerable)
-      const invuln = st.screen === 'playing' && nowMs() - st.player.lastHitAtMs < GAME_CONFIG.player.invulnerableMsAfterHit;
-      const shouldDrawPlayer = !invuln || Math.floor(nowMs() / 100) % 2 === 0;
-      if (shouldDrawPlayer) {
-        drawShip(ctx, st.player.x, st.player.y, st.player.radius, PRIMARY, true);
-      }
-
-      // Particles
-      for (const p of st.particles) {
-        const age = clamp((nowMs() - p.bornAtMs) / p.aliveMs, 0, 1);
-        ctx.save();
-        ctx.globalAlpha = 1 - age;
-        ctx.fillStyle = p.color;
-        ctx.fillRect(p.x, p.y, 3, 3);
-        ctx.restore();
-      }
-
-      // Overlay hints when playing
-      if (st.screen === 'playing') {
-        ctx.save();
-        ctx.fillStyle = 'rgba(255,255,255,0.10)';
-        drawRoundedRect(ctx, 12, h - 48, 240, 34, 10);
-        ctx.fill();
-
-        ctx.fillStyle = 'rgba(255,255,255,0.78)';
-        ctx.font = '600 12px Inter, system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif';
-        ctx.fillText('Move: WASD/Arrows  •  Shoot: Space', 24, h - 27);
-        ctx.restore();
-      }
-
-      // If not playing, draw a subtle overlay to "dim" the canvas behind UI
-      if (st.screen !== 'playing') {
-        ctx.save();
-        ctx.fillStyle = 'rgba(0,0,0,0.28)';
-        ctx.fillRect(0, 0, w, h);
-        ctx.restore();
-      }
-    },
-    []
-  );
+    // If not playing, draw a subtle overlay to "dim" the canvas behind UI
+    if (st.screen !== 'playing') {
+      ctx.save();
+      ctx.fillStyle = 'rgba(0,0,0,0.28)';
+      ctx.fillRect(0, 0, w, h);
+      ctx.restore();
+    }
+  }, []);
 
   // Game loop
   useEffect(() => {
@@ -700,13 +873,30 @@ function App() {
       const dtSec = clamp(dtMs / 1000, 0, 0.05);
       lastFrameAtMsRef.current = ms;
 
-      setState(prev => step(prev, dtSec, ms));
+      setState(prev => {
+        const next = step(prev, dtSec, ms);
+        // Detect transition to gameover to persist score (avoid requiring deterministic gameplay in tests).
+        if (prev.screen === 'playing' && next.screen === 'gameover') {
+          // Persist score once when we hit gameover.
+          // (We don't call recordScoreAndGameOver here to avoid nested setState.)
+          const entry = {
+            player: playerName.trim() || 'Player',
+            score: next.score,
+            timeAliveSec: next.timeAliveSec,
+            at: new Date().toISOString()
+          };
+          const updated = upsertHighScore(readHighScores(), entry);
+          writeHighScores(updated);
+          setHighScores(updated);
+        }
+        return next;
+      });
     };
 
     // Always run RAF: we render even on start/gameover (dimmed canvas) for a lively background.
     rafRef.current = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(rafRef.current);
-  }, [step]);
+  }, [playerName, step]);
 
   // Canvas setup: keep a fixed logical resolution, scale with CSS for responsiveness.
   useEffect(() => {
@@ -725,6 +915,13 @@ function App() {
   const healthPct = clamp(state.health / GAME_CONFIG.player.maxHealth, 0, 1);
   const difficultyLabel = state.difficulty.toFixed(1);
 
+  const onSubmitPlayerName = e => {
+    e.preventDefault();
+    const trimmed = playerNameDraft.trim();
+    if (!trimmed) return;
+    persistPlayerName(trimmed);
+  };
+
   return (
     <div className="App">
       <main className="page">
@@ -738,6 +935,20 @@ function App() {
           </div>
 
           <div className="hud" role="status" aria-live="polite">
+            <div className="hudItem">
+              <div className="hudLabel">Player</div>
+              <div className="hudValue" data-testid="hud-player">
+                {hasPlayerName ? playerName : '—'}
+              </div>
+            </div>
+
+            <div className="hudItem">
+              <div className="hudLabel">High Score</div>
+              <div className="hudValue" data-testid="hud-high-score">
+                {currentTopScore ? formatInt(currentTopScore.score) : '—'}
+              </div>
+            </div>
+
             <div className="hudItem">
               <div className="hudLabel">Score</div>
               <div className="hudValue" data-testid="hud-score">
@@ -784,25 +995,99 @@ function App() {
               <div className="card">
                 <h1 className="title">Space War</h1>
                 <p className="subtitle">Pilot your ship, shoot incoming enemies, and survive as the waves accelerate.</p>
-                <ul className="bullets">
-                  <li>
-                    <strong>Move:</strong> WASD / Arrow keys
-                  </li>
-                  <li>
-                    <strong>Shoot:</strong> Space
-                  </li>
-                  <li>
-                    <strong>Tip:</strong> Stay mobile — difficulty scales over time
-                  </li>
-                </ul>
 
-                <div className="actions">
-                  <button className="btn btnPrimary" onClick={startGame} autoFocus>
-                    Start Game
-                  </button>
-                </div>
+                {!hasPlayerName && (
+                  <>
+                    <p className="subtitle" style={{ marginTop: 14 }}>
+                      Enter a player name to begin. This is stored locally in your browser.
+                    </p>
 
-                <div className="hint">Press Enter to start • Esc to return here while playing</div>
+                    <form onSubmit={onSubmitPlayerName} aria-label="Player name form" style={{ marginTop: 12 }}>
+                      <label style={{ display: 'block', fontSize: 12, color: 'var(--muted)', fontWeight: 700 }}>
+                        Player name
+                      </label>
+                      <input
+                        aria-label="Player name"
+                        value={playerNameDraft}
+                        onChange={e => setPlayerNameDraft(e.target.value)}
+                        placeholder="e.g., NovaPilot"
+                        autoFocus
+                        style={{
+                          marginTop: 6,
+                          width: '100%',
+                          boxSizing: 'border-box',
+                          padding: '12px 12px',
+                          borderRadius: 12,
+                          border: '1px solid rgba(15, 23, 42, 0.14)',
+                          background: 'rgba(255,255,255,0.9)',
+                          outline: 'none',
+                          fontWeight: 700
+                        }}
+                      />
+
+                      <div className="actions">
+                        <button className="btn btnPrimary" type="submit" disabled={!playerNameDraft.trim()}>
+                          Save Name
+                        </button>
+                      </div>
+
+                      <div className="hint">Tip: You can change this later from the start screen.</div>
+                    </form>
+                  </>
+                )}
+
+                {hasPlayerName && (
+                  <>
+                    <div className="statRow" aria-label="Player info">
+                      <div className="statPill">
+                        <div className="statLabel">Signed in as</div>
+                        <div className="statValue">{playerName}</div>
+                      </div>
+                      <div className="statPill">
+                        <div className="statLabel">Best</div>
+                        <div className="statValue">{currentTopScore ? formatInt(currentTopScore.score) : '—'}</div>
+                      </div>
+                    </div>
+
+                    <ul className="bullets">
+                      <li>
+                        <strong>Move:</strong> WASD / Arrow keys
+                      </li>
+                      <li>
+                        <strong>Shoot:</strong> Space
+                      </li>
+                      <li>
+                        <strong>Tip:</strong> Stay mobile — difficulty scales over time
+                      </li>
+                    </ul>
+
+                    <div className="actions">
+                      <button className="btn btnPrimary" onClick={startGame} autoFocus>
+                        Start Game
+                      </button>
+                      <button className="btn btnGhost" onClick={clearPlayerName}>
+                        Change Player
+                      </button>
+                    </div>
+
+                    <div className="hint">Press Enter to start • Esc to return here while playing</div>
+                  </>
+                )}
+
+                {highScores.length > 0 && (
+                  <>
+                    <div className="hint" style={{ marginTop: 14, fontWeight: 800 }}>
+                      High Scores
+                    </div>
+                    <ol className="bullets" aria-label="High scores list">
+                      {highScores.slice(0, 5).map((s, idx) => (
+                        <li key={`${s.at}-${idx}`}>
+                          <strong>{s.player}</strong> — {formatInt(s.score)}
+                        </li>
+                      ))}
+                    </ol>
+                  </>
+                )}
               </div>
             </div>
           )}
@@ -812,7 +1097,15 @@ function App() {
               <div className="card">
                 <h1 className="title">Game Over</h1>
                 <p className="subtitle">
-                  Final score: <strong>{formatInt(state.score)}</strong>
+                  {hasPlayerName ? (
+                    <>
+                      {playerName}, your final score: <strong>{formatInt(state.score)}</strong>
+                    </>
+                  ) : (
+                    <>
+                      Final score: <strong>{formatInt(state.score)}</strong>
+                    </>
+                  )}
                 </p>
 
                 <div className="statRow">
@@ -824,7 +1117,21 @@ function App() {
                     <div className="statLabel">Peak Difficulty</div>
                     <div className="statValue">{difficultyLabel}</div>
                   </div>
+                  <div className="statPill">
+                    <div className="statLabel">Best</div>
+                    <div className="statValue">{currentTopScore ? formatInt(currentTopScore.score) : '—'}</div>
+                  </div>
                 </div>
+
+                {highScores.length > 0 && (
+                  <ol className="bullets" aria-label="High scores list">
+                    {highScores.slice(0, 5).map((s, idx) => (
+                      <li key={`${s.at}-${idx}`}>
+                        <strong>{s.player}</strong> — {formatInt(s.score)}
+                      </li>
+                    ))}
+                  </ol>
+                )}
 
                 <div className="actions">
                   <button className="btn btnPrimary" onClick={restartGame} autoFocus>
